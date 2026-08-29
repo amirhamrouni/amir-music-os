@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./ai.css";
+import "./studio.css";
+import "./studio-patch.css";
 
 export const metadata: Metadata = {
   title: "Amir Music OS",
