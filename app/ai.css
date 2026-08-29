@@ -1,0 +1,6 @@
+.output h3{font-size:8px;letter-spacing:.16em;color:var(--acid);margin:22px 0 -12px}
+.output .lyrics{max-height:360px;overflow:auto}
+.output ol{padding-left:18px;color:#d7d4dc;font-size:10px;line-height:1.8}
+.rationale,.exclude,.ai-error{font-size:10px;line-height:1.6;color:var(--muted)}
+.ai-error{color:#ff8064}
+.form button:disabled{opacity:.55;cursor:wait}
