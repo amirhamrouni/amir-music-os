@@ -1,0 +1,31 @@
+{
+  "base_url": "https://rule-unnamed-could.ngrok-free.dev",
+  "video_subject": "Cinematic romantic Arabic music video for a song about love arriving at the wrong time after heartbreak. A man who had closed his heart meets a woman unexpectedly; attraction, fear, distance, and hope. Human movement in every shot, realistic actors, emotional close-ups, rainy European city at night, warm memory flashes, subtle romantic tension, no text on screen, no documentary footage, no generic landscapes.",
+  "video_script": "A lonely man walks through a rainy neon city after heartbreak. He keeps his distance from people. A woman appears unexpectedly in a warm cafe doorway and their eyes meet. They walk together through wet streets, laugh softly, and almost touch hands. He pulls away because he is afraid to love again. She turns to leave at a train platform. He runs after her through the rain. Their eyes meet again under station lights, ending on their hands finally touching.",
+  "video_terms": [
+    "lonely man walking rainy neon european city night cinematic realistic",
+    "woman entering warm cafe doorway eye contact man cinematic realistic",
+    "romantic couple walking wet city street night subtle smiles cinematic",
+    "close up hands almost touching romantic tension cinematic realistic",
+    "man pulling away emotional fear heartbreak night city cinematic",
+    "woman walking away train platform night separation cinematic realistic",
+    "man running through rain train station emotional cinematic realistic",
+    "romantic eye contact station lights hands touching final cinematic"
+  ],
+  "video_aspect": "9:16",
+  "video_fit_mode": "cover",
+  "video_concat_mode": "sequential",
+  "video_transition_mode": "none",
+  "video_clip_duration": 3,
+  "video_clip_speed": 1,
+  "match_materials_to_script": true,
+  "video_count": 1,
+  "video_source": "pexels",
+  "voice_volume": 0.01,
+  "bgm_type": "",
+  "bgm_volume": 0,
+  "subtitle_enabled": false,
+  "video_language": "en",
+  "paragraph_number": 1,
+  "n_threads": 2
+}
