@@ -1,0 +1,136 @@
+name: MoneyPrinter Beat Cut Clip
+
+on:
+  push:
+    paths:
+      - 'mpt-fast-requests/*.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moneyprinter-fast-single
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install media tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Prepare and download motion assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST_SOURCE=$(ls -1t mpt-fast-requests/*.json | head -1)
+          cp "$REQUEST_SOURCE" request-envelope.json
+          mkdir -p mpt-assets segments
+          python - <<'PY'
+          import html,json,re,urllib.request
+          from pathlib import Path
+          env=json.load(open('request-envelope.json',encoding='utf-8'))
+          pages=env['mixkit_pages']
+          ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36'
+          out=Path('mpt-assets')
+          def text(url):
+              q=urllib.request.Request(url,headers={'User-Agent':ua,'Accept':'text/html'})
+              with urllib.request.urlopen(q,timeout=45) as r:return r.read().decode('utf-8','ignore')
+          def links(s):
+              vals=[]
+              for t in [s,html.unescape(s),s.replace('\\u002F','/').replace('\\/','/')]:
+                  for u in re.findall(r'https://assets\.mixkit\.co/[^\"\'<> ]+?\.mp4(?:\?[^\"\'<> ]*)?',t):
+                      u=html.unescape(u).replace('\\/','/')
+                      if u not in vals:vals.append(u)
+              return vals
+          def score(u):
+              x=u.lower();return (80 if '1080' in x else 0)+(50 if 'full' in x else 0)+(40 if 'large' in x else 0)+(20 if 'preview' in x else 0)-(1000 if 'watermark' in x else 0)
+          saved=[]
+          for i,page in enumerate(pages,1):
+              urls=sorted(links(text(page)),key=score,reverse=True)
+              for url in urls[:10]:
+                  try:
+                      dest=out/f'{i:02d}.mp4'
+                      q=urllib.request.Request(url,headers={'User-Agent':ua,'Referer':page})
+                      with urllib.request.urlopen(q,timeout=120) as r,open(dest,'wb') as f:
+                          while True:
+                              b=r.read(1024*1024)
+                              if not b:break
+                              f.write(b)
+                      if dest.stat().st_size>150000:
+                          saved.append(str(dest));print('ASSET',i,dest.stat().st_size);break
+                  except Exception as e:print('RETRY',i,type(e).__name__)
+          if len(saved)<8:raise SystemExit(f'Need 8+ usable clips, got {len(saved)}')
+          json.dump(saved,open('downloaded-assets.json','w'))
+          PY
+
+      - name: Build MoneyPrinter manifest
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          env=json.load(open('request-envelope.json',encoding='utf-8'))
+          assets=json.load(open('downloaded-assets.json'))
+          job={k:v for k,v in env.items() if k not in {'mixkit_pages','target_duration_seconds'}}
+          job.update({
+            'video_source':'local','video_materials':[{'provider':'local','url':x,'duration':0} for x in assets],
+            'video_concat_mode':'sequential','video_aspect':'9:16','video_fit_mode':'cover',
+            'voice_name':'no-voice','voice_volume':0,'bgm_type':'','bgm_volume':0,
+            'subtitle_enabled':False,'match_materials_to_script':True
+          })
+          json.dump([job],open('mpt-job.json','w',encoding='utf-8'),ensure_ascii=False,indent=2)
+          PY
+
+      - name: MoneyPrinter materials pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/harry0703/MoneyPrinterTurbo.git MoneyPrinterTurbo
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          cd MoneyPrinterTurbo
+          "$HOME/.local/bin/uv" run --python 3.11 python cli.py --batch-file "$GITHUB_WORKSPACE/mpt-job.json" --stop-at materials | tee "$GITHUB_WORKSPACE/mpt-materials-result.json"
+
+      - name: Build high-retention beat-cut visual
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,subprocess,pathlib
+          assets=json.load(open('downloaded-assets.json'))[:10]
+          total=float(json.load(open('request-envelope.json')).get('target_duration_seconds',26.712))
+          n=len(assets); seg=total/n
+          pathlib.Path('segments').mkdir(exist_ok=True)
+          concat=[]
+          for i,src in enumerate(assets):
+              dst=f'segments/{i:02d}.mp4'
+              start=0.25+(i%3)*0.18
+              vf=(f"setpts=PTS/1.08,scale=1080:1920:force_original_aspect_ratio=increase,"
+                  f"crop=1080:1920,fps=30,trim=duration={seg:.6f},setpts=PTS-STARTPTS")
+              cmd=['ffmpeg','-y','-ss',f'{start:.2f}','-i',src,'-vf',vf,'-an','-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p',dst]
+              subprocess.run(cmd,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+              concat.append(f"file '{pathlib.Path(dst).resolve()}'")
+          open('concat.txt','w').write('\n'.join(concat)+'\n')
+          print('SEGMENT_DURATION',seg,'COUNT',n)
+          PY
+          DUR=$(python -c "import json;print(json.load(open('request-envelope.json'))['target_duration_seconds'])")
+          ffmpeg -y -f concat -safe 0 -i concat.txt -t "$DUR" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +faststart mpt-beatcut-visual.mp4
+          ffprobe -v error -show_entries stream=width,height,r_frame_rate -show_entries format=duration,size -of json mpt-beatcut-visual.mp4 > ffprobe.json
+          cat ffprobe.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moneyprinter-beatcut-${{ github.run_id }}
+          path: |
+            mpt-beatcut-visual.mp4
+            ffprobe.json
+            mpt-materials-result.json
+            mpt-job.json
+            downloaded-assets.json
+            request-envelope.json
+          retention-days: 7
+          if-no-files-found: error
