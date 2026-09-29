@@ -66,49 +66,8 @@ jobs:
                   return
               raise RuntimeError(f'Cannot find field: {label}; textareas={areas.count()}')
 
-          def set_checkbox(page, label, wanted):
-              cb=page.get_by_label(label, exact=True)
-              if not cb.count():
-                  block=page.locator("div[data-testid='stCheckbox']").filter(has_text=label)
-                  cb=block.locator("input[type='checkbox']")
-              if not cb.count():
-                  raise RuntimeError(f'Checkbox not found: {label}')
-              checked=cb.first.is_checked()
-              if checked != wanted:
-                  cb.first.click(force=True)
-                  page.wait_for_timeout(1200)
-              print('CHECKBOX',label,wanted)
-
-          def choose_radio(page, group_label, option):
-              group=page.locator("div[data-testid='stRadio']").filter(has_text=group_label)
-              if not group.count():
-                  raise RuntimeError(f'Radio group not found: {group_label}')
-              opt=group.first.get_by_text(option, exact=True)
-              if not opt.count():
-                  opt=group.first.locator('label').filter(has_text=option)
-              if not opt.count():
-                  raise RuntimeError(f'Radio option not found: {group_label} -> {option}')
-              opt.first.click(force=True)
-              page.wait_for_timeout(1200)
-              print('RADIO',group_label,option)
-
-          def choose_select(page, label, option):
-              block=page.locator("div[data-testid='stSelectbox']").filter(has_text=label)
-              if not block.count():
-                  raise RuntimeError(f'Selectbox not found: {label}')
-              trigger=block.first.locator("div[data-baseweb='select']")
-              if not trigger.count():
-                  trigger=block.first.locator('[role="combobox"]')
-              trigger.first.click(force=True)
-              page.wait_for_timeout(300)
-              choice=page.get_by_text(option, exact=True)
-              if not choice.count():
-                  choice=page.locator('[role="option"]').filter(has_text=option)
-              if not choice.count():
-                  raise RuntimeError(f'Select option not found: {label} -> {option}')
-              choice.last.click(force=True)
-              page.wait_for_timeout(1200)
-              print('SELECT',label,option)
+          def clear_tour(page):
+              page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover,.driver-active-element').forEach(e=>{if(e.classList.contains('driver-active-element')){e.classList.remove('driver-active-element')}else{e.remove()}})")
 
           with sync_playwright() as p:
               browser=p.chromium.launch(headless=True)
@@ -122,59 +81,48 @@ jobs:
                   page.goto(base, wait_until='domcontentloaded', timeout=120000)
                   page.get_by_text('MoneyPrinterTurbo', exact=False).first.wait_for(timeout=120000)
                   page.locator('textarea').first.wait_for(state='visible', timeout=90000)
-                  print('TEXTAREA_COUNT', page.locator('textarea').count())
+                  print('MPT_READY')
                   fill_area(page, 'Video Subject', subject, 0)
                   fill_area(page, 'Video Script (Optional)', script, 1)
                   fill_area(page, 'Video Keywords (English, Optional)', terms, 2)
-
-                  page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover,.driver-active-element').forEach(e=>{if(e.classList.contains('driver-active-element')){e.classList.remove('driver-active-element')}else{e.remove()}})")
-
-                  # Music-clip contract: visual storytelling only. The original song is muxed later.
-                  choose_radio(page, 'Voiceover Mode', 'None')
-                  choose_select(page, 'Background Music Source', 'No Background Music')
-                  set_checkbox(page, 'Enable Subtitles', False)
-                  set_checkbox(page, 'Match Visuals to Script Order', True)
-                  choose_select(page, 'Video Concatenation Mode', 'Sequential Concatenation')
-                  choose_select(page, 'Video Aspect Ratio', 'Portrait 9:16')
-
-                  page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover,.driver-active-element').forEach(e=>{if(e.classList.contains('driver-active-element')){e.classList.remove('driver-active-element')}else{e.remove()}})")
+                  clear_tour(page)
                   page.screenshot(path='mpt-ready.png', full_page=True)
 
                   btn=page.get_by_role('button', name='Generate Video', exact=True)
                   if not btn.count():
-                      btn=page.get_by_role('button', name='Start Generating Video', exact=True)
+                      btn=page.locator('button').filter(has_text=re.compile(r'Generate Video|Start Generating Video', re.I))
                   if not btn.count():
                       raise RuntimeError('Generate Video button not found')
                   btn.first.scroll_into_view_if_needed()
                   btn.first.click(timeout=30000, force=True)
                   print('GENERATE_CLICKED')
+                  page.wait_for_timeout(3000)
 
                   deadline=time.time()+2100
-                  completed=False
+                  last_status=''
                   while time.time()<deadline:
-                      if page.get_by_text('Video Generation Failed', exact=False).count():
+                      clear_tour(page)
+                      body=page.locator('body').inner_text()
+                      if 'Video Generation Failed' in body:
                           page.screenshot(path='mpt-failed.png', full_page=True)
+                          print(body[-8000:])
                           raise RuntimeError('MoneyPrinter reported generation failure')
-                      if page.get_by_text('Video Generation Completed', exact=False).count():
-                          completed=True
+                      dls=page.get_by_role('button', name=re.compile('Download Video', re.I))
+                      if dls.count():
+                          print('DOWNLOAD_READY', dls.count())
                           break
-                      if page.get_by_role('button', name=re.compile('Download Video', re.I)).count():
-                          completed=True
-                          break
+                      status='GENERATING' if ('Generating Video' in body or 'Start Generating Video' in body) else 'WAITING'
+                      if status != last_status:
+                          print('STATUS',status)
+                          last_status=status
                       time.sleep(5)
-                  if not completed:
+                  else:
                       page.screenshot(path='mpt-timeout.png', full_page=True)
+                      print(page.locator('body').inner_text()[-10000:])
                       raise TimeoutError('Timed out waiting for MoneyPrinter output')
 
                   dls=page.get_by_role('button', name=re.compile('Download Video', re.I))
-                  if not dls.count():
-                      time.sleep(3)
-                      dls=page.get_by_role('button', name=re.compile('Download Video', re.I))
-                  if not dls.count():
-                      page.screenshot(path='mpt-no-download.png', full_page=True)
-                      raise RuntimeError('Generation completed but no Download Video button was found')
-
-                  page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover').forEach(e=>e.remove())")
+                  clear_tour(page)
                   with page.expect_download(timeout=120000) as di:
                       dls.last.click(force=True)
                   download=di.value
@@ -197,7 +145,6 @@ jobs:
             mpt-complete.png
             mpt-failed.png
             mpt-timeout.png
-            mpt-no-download.png
             envelope.json
           if-no-files-found: warn
           retention-days: 7
