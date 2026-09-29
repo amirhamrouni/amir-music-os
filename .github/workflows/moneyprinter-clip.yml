@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: moneyprinter-webui-single
+  cancel-in-progress: false
+
 jobs:
   generate:
     runs-on: ubuntu-latest
@@ -39,6 +43,8 @@ jobs:
           subject=req['video_subject']
           script=req.get('video_script','')
           terms=req.get('video_terms','')
+          if isinstance(terms,list):
+              terms=', '.join(terms)
 
           def fill_area(page, label, value, fallback_index):
               if not value:
@@ -60,11 +66,55 @@ jobs:
                   return
               raise RuntimeError(f'Cannot find field: {label}; textareas={areas.count()}')
 
+          def set_checkbox(page, label, wanted):
+              cb=page.get_by_label(label, exact=True)
+              if not cb.count():
+                  block=page.locator("div[data-testid='stCheckbox']").filter(has_text=label)
+                  cb=block.locator("input[type='checkbox']")
+              if not cb.count():
+                  raise RuntimeError(f'Checkbox not found: {label}')
+              checked=cb.first.is_checked()
+              if checked != wanted:
+                  cb.first.click(force=True)
+                  page.wait_for_timeout(1200)
+              print('CHECKBOX',label,wanted)
+
+          def choose_radio(page, group_label, option):
+              group=page.locator("div[data-testid='stRadio']").filter(has_text=group_label)
+              if not group.count():
+                  raise RuntimeError(f'Radio group not found: {group_label}')
+              opt=group.first.get_by_text(option, exact=True)
+              if not opt.count():
+                  opt=group.first.locator('label').filter(has_text=option)
+              if not opt.count():
+                  raise RuntimeError(f'Radio option not found: {group_label} -> {option}')
+              opt.first.click(force=True)
+              page.wait_for_timeout(1200)
+              print('RADIO',group_label,option)
+
+          def choose_select(page, label, option):
+              block=page.locator("div[data-testid='stSelectbox']").filter(has_text=label)
+              if not block.count():
+                  raise RuntimeError(f'Selectbox not found: {label}')
+              trigger=block.first.locator("div[data-baseweb='select']")
+              if not trigger.count():
+                  trigger=block.first.locator('[role="combobox"]')
+              trigger.first.click(force=True)
+              page.wait_for_timeout(300)
+              choice=page.get_by_text(option, exact=True)
+              if not choice.count():
+                  choice=page.locator('[role="option"]').filter(has_text=option)
+              if not choice.count():
+                  raise RuntimeError(f'Select option not found: {label} -> {option}')
+              choice.last.click(force=True)
+              page.wait_for_timeout(1200)
+              print('SELECT',label,option)
+
           with sync_playwright() as p:
               browser=p.chromium.launch(headless=True)
               ctx=browser.new_context(
                   accept_downloads=True,
-                  viewport={"width":1440,"height":1400},
+                  viewport={"width":1440,"height":1600},
                   extra_http_headers={"ngrok-skip-browser-warning":"1"},
               )
               page=ctx.new_page()
@@ -77,8 +127,16 @@ jobs:
                   fill_area(page, 'Video Script (Optional)', script, 1)
                   fill_area(page, 'Video Keywords (English, Optional)', terms, 2)
 
-                  # MoneyPrinter's first-run Driver.js tour can cover the Generate button.
-                  # Remove the visual tour layer; this does not alter app settings or content.
+                  page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover,.driver-active-element').forEach(e=>{if(e.classList.contains('driver-active-element')){e.classList.remove('driver-active-element')}else{e.remove()}})")
+
+                  # Music-clip contract: visual storytelling only. The original song is muxed later.
+                  choose_radio(page, 'Voiceover Mode', 'None')
+                  choose_select(page, 'Background Music Source', 'No Background Music')
+                  set_checkbox(page, 'Enable Subtitles', False)
+                  set_checkbox(page, 'Match Visuals to Script Order', True)
+                  choose_select(page, 'Video Concatenation Mode', 'Sequential Concatenation')
+                  choose_select(page, 'Video Aspect Ratio', 'Portrait 9:16')
+
                   page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover,.driver-active-element').forEach(e=>{if(e.classList.contains('driver-active-element')){e.classList.remove('driver-active-element')}else{e.remove()}})")
                   page.screenshot(path='mpt-ready.png', full_page=True)
 
@@ -132,7 +190,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: moneyprinter-visual
+          name: moneyprinter-visual-${{ github.run_id }}
           path: |
             mpt-visual.mp4
             mpt-ready.png
