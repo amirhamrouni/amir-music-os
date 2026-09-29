@@ -1,0 +1,173 @@
+name: MoneyPrinter Autonomous Music Clip
+
+on:
+  push:
+    paths:
+      - 'mpt-local-requests/*.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moneyprinter-local-single
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST_SOURCE=$(ls -1t mpt-local-requests/*.json | head -1)
+          cp "$REQUEST_SOURCE" request-envelope.json
+          mkdir -p mpt-assets
+
+      - name: Download licensed motion clips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import html, json, re, urllib.request
+          from pathlib import Path
+
+          env=json.load(open('request-envelope.json',encoding='utf-8'))
+          pages=env.get('mixkit_pages') or []
+          if len(pages) < 5:
+              raise SystemExit('Need at least five motion source pages')
+
+          out=Path('mpt-assets'); out.mkdir(exist_ok=True)
+          ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36'
+
+          def fetch_text(url):
+              req=urllib.request.Request(url,headers={'User-Agent':ua,'Accept':'text/html,application/xhtml+xml'})
+              with urllib.request.urlopen(req,timeout=45) as r:
+                  return r.read().decode('utf-8','ignore')
+
+          def extract_mp4(text):
+              texts=[text, html.unescape(text), text.replace('\\u002F','/').replace('\\/','/')]
+              found=[]
+              for t in texts:
+                  for u in re.findall(r'https://assets\.mixkit\.co/[^\"\'<> ]+?\.mp4(?:\?[^\"\'<> ]*)?',t):
+                      u=html.unescape(u).replace('\\/','/')
+                      if u not in found: found.append(u)
+              return found
+
+          def score(u):
+              s=0; x=u.lower()
+              for token,val in [('1080',80),('full',50),('large',40),('preview',20),('720',10)]:
+                  if token in x:s+=val
+              if 'watermark' in x:s-=1000
+              return s
+
+          saved=[]
+          for idx,page in enumerate(pages,1):
+              text=fetch_text(page)
+              urls=sorted(extract_mp4(text),key=score,reverse=True)
+              if not urls:
+                  print('NO_MP4_FOUND',idx,page)
+                  continue
+              for url in urls[:10]:
+                  try:
+                      dest=out/f'{idx:02d}.mp4'
+                      req=urllib.request.Request(url,headers={'User-Agent':ua,'Referer':page})
+                      with urllib.request.urlopen(req,timeout=120) as r, open(dest,'wb') as f:
+                          while True:
+                              chunk=r.read(1024*1024)
+                              if not chunk:break
+                              f.write(chunk)
+                      if dest.stat().st_size > 150000:
+                          saved.append(str(dest))
+                          print('DOWNLOADED',dest.name,dest.stat().st_size)
+                          break
+                  except Exception as exc:
+                      print('DOWNLOAD_RETRY',idx,type(exc).__name__)
+          if len(saved) < 5:
+              raise SystemExit(f'Only {len(saved)} usable clips downloaded')
+          json.dump(saved,open('downloaded-assets.json','w'),ensure_ascii=False)
+          PY
+
+      - name: Verify source motion
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in mpt-assets/*.mp4; do
+            ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of csv=p=0 "$f"
+          done
+
+      - name: Build MoneyPrinter manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          env=json.load(open('request-envelope.json',encoding='utf-8'))
+          assets=json.load(open('downloaded-assets.json',encoding='utf-8'))
+          job={k:v for k,v in env.items() if k not in {'mixkit_pages','target_duration_seconds'}}
+          job['video_source']='local'
+          job['video_materials']=[{'provider':'local','url':p,'duration':0} for p in assets]
+          job['video_concat_mode']='sequential'
+          job['video_aspect']='9:16'
+          job['video_fit_mode']='cover'
+          job['voice_name']='no-voice'
+          job['voice_volume']=0
+          job['bgm_type']=''
+          job['bgm_volume']=0
+          job['subtitle_enabled']=False
+          job['match_materials_to_script']=True
+          json.dump([job],open('mpt-job.json','w',encoding='utf-8'),ensure_ascii=False,indent=2)
+          print('MPT_MANIFEST_READY',len(assets))
+          PY
+
+      - name: Install MoneyPrinterTurbo
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/harry0703/MoneyPrinterTurbo.git MoneyPrinterTurbo
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Generate visual with MoneyPrinterTurbo
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd MoneyPrinterTurbo
+          "$HOME/.local/bin/uv" run --python 3.11 python cli.py --batch-file "$GITHUB_WORKSPACE/mpt-job.json" --stop-at video | tee "$GITHUB_WORKSPACE/mpt-result.json"
+          FINAL=$(find storage/tasks -type f \( -name 'final-1.mp4' -o -name 'final*.mp4' \) -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
+          test -n "$FINAL"
+          cp "$FINAL" "$GITHUB_WORKSPACE/mpt-visual.mp4"
+          test -s "$GITHUB_WORKSPACE/mpt-visual.mp4"
+
+      - name: Normalize vertical reel visual
+        shell: bash
+        run: |
+          set -euo pipefail
+          DUR=$(python - <<'PY'
+          import json
+          print(float(json.load(open('request-envelope.json')).get('target_duration_seconds',26.712)))
+          PY
+          )
+          ffmpeg -y -stream_loop -1 -i mpt-visual.mp4 -t "$DUR" \
+            -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30" \
+            -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +faststart \
+            mpt-visual-normalized.mp4
+          ffprobe -v error -show_entries stream=width,height,duration -show_entries format=duration -of json mpt-visual-normalized.mp4 > ffprobe.json
+          cat ffprobe.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: moneyprinter-autonomous-visual-${{ github.run_id }}
+          path: |
+            mpt-visual-normalized.mp4
+            mpt-visual.mp4
+            ffprobe.json
+            mpt-result.json
+            mpt-job.json
+            downloaded-assets.json
+            request-envelope.json
+          if-no-files-found: warn
+          retention-days: 7
