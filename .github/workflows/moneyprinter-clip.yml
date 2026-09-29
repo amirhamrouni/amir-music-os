@@ -32,7 +32,7 @@ jobs:
           cp "$REQUEST_SOURCE" envelope.json
           cat > run_mpt.py <<'PY'
           import json, re, time
-          from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+          from playwright.sync_api import sync_playwright
 
           req=json.load(open('envelope.json',encoding='utf-8'))
           base=req['base_url'].rstrip('/')
@@ -40,38 +40,57 @@ jobs:
           script=req.get('video_script','')
           terms=req.get('video_terms','')
 
-          def fill_area(page, label, value):
+          def fill_area(page, label, value, fallback_index):
               if not value:
                   return
-              box=page.locator("div[data-testid='stTextArea']").filter(has_text=label).locator('textarea')
-              if box.count():
-                  box.first.fill(value)
+              candidates=[
+                  page.locator(f"textarea[aria-label='{label}']"),
+                  page.locator("div[data-testid='stTextArea']").filter(has_text=label).locator('textarea'),
+                  page.get_by_label(label, exact=True),
+              ]
+              for box in candidates:
+                  if box.count():
+                      box.first.fill(value)
+                      print('FILLED', label)
+                      return
+              areas=page.locator('textarea')
+              if areas.count()>fallback_index:
+                  areas.nth(fallback_index).fill(value)
+                  print('FILLED_FALLBACK', label, fallback_index)
                   return
-              alt=page.get_by_label(label, exact=True)
-              if alt.count():
-                  alt.first.fill(value)
-                  return
-              raise RuntimeError(f'Cannot find textarea: {label}')
+              raise RuntimeError(f'Cannot find field: {label}; textareas={areas.count()}')
 
           with sync_playwright() as p:
               browser=p.chromium.launch(headless=True)
               ctx=browser.new_context(
                   accept_downloads=True,
-                  viewport={"width":1440,"height":1200},
+                  viewport={"width":1440,"height":1400},
                   extra_http_headers={"ngrok-skip-browser-warning":"1"},
               )
               page=ctx.new_page()
               try:
                   page.goto(base, wait_until='domcontentloaded', timeout=120000)
                   page.get_by_text('MoneyPrinterTurbo', exact=False).first.wait_for(timeout=120000)
-                  fill_area(page, 'Video Subject', subject)
-                  fill_area(page, 'Video Script (Optional)', script)
-                  fill_area(page, 'Video Keywords (English, Optional)', terms)
+                  try:
+                      page.locator('textarea').first.wait_for(state='visible', timeout=90000)
+                  except Exception:
+                      page.screenshot(path='mpt-loaded.png', full_page=True)
+                      open('mpt-page.html','w',encoding='utf-8').write(page.content())
+                      print('VISIBLE_TEXT_BEGIN')
+                      print(page.locator('body').inner_text()[:12000])
+                      print('VISIBLE_TEXT_END')
+                      raise
+                  print('TEXTAREA_COUNT', page.locator('textarea').count())
+                  fill_area(page, 'Video Subject', subject, 0)
+                  fill_area(page, 'Video Script (Optional)', script, 1)
+                  fill_area(page, 'Video Keywords (English, Optional)', terms, 2)
                   page.screenshot(path='mpt-ready.png', full_page=True)
 
                   btn=page.get_by_role('button', name='Generate Video', exact=True)
                   if not btn.count():
                       btn=page.get_by_role('button', name='Start Generating Video', exact=True)
+                  if not btn.count():
+                      raise RuntimeError('Generate Video button not found')
                   btn.first.scroll_into_view_if_needed()
                   btn.first.click(timeout=60000)
 
@@ -94,8 +113,7 @@ jobs:
 
                   dls=page.get_by_role('button', name=re.compile('Download Video', re.I))
                   if not dls.count():
-                      page.get_by_text('Video Generation Completed', exact=False).first.scroll_into_view_if_needed()
-                      time.sleep(2)
+                      time.sleep(3)
                       dls=page.get_by_role('button', name=re.compile('Download Video', re.I))
                   if not dls.count():
                       page.screenshot(path='mpt-no-download.png', full_page=True)
@@ -120,10 +138,12 @@ jobs:
           path: |
             mpt-visual.mp4
             mpt-ready.png
+            mpt-loaded.png
             mpt-complete.png
             mpt-failed.png
             mpt-timeout.png
             mpt-no-download.png
+            mpt-page.html
             envelope.json
           if-no-files-found: warn
           retention-days: 7
