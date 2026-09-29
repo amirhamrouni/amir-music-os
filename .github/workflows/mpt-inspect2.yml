@@ -1,0 +1,51 @@
+name: MPT Inspect 2
+on:
+  push:
+    paths: ['mpt-inspect2/**']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install --disable-pip-version-check playwright
+          python -m playwright install --with-deps chromium
+      - name: Inspect MoneyPrinter state
+        run: |
+          cat > mpt_probe.py <<'PY'
+          import re, time
+          from playwright.sync_api import sync_playwright
+          base='https://rule-unnamed-could.ngrok-free.dev'
+          with sync_playwright() as p:
+              b=p.chromium.launch(headless=True)
+              c=b.new_context(viewport={'width':1440,'height':1400},extra_http_headers={'ngrok-skip-browser-warning':'1'})
+              page=c.new_page()
+              page.goto(base,wait_until='domcontentloaded',timeout=120000)
+              page.get_by_text('MoneyPrinterTurbo',exact=False).first.wait_for(timeout=120000)
+              time.sleep(3)
+              page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover').forEach(e=>e.remove())")
+              buttons=page.get_by_role('button',name=re.compile('Task Manager',re.I))
+              print('TASK_MANAGER_BUTTONS',buttons.count())
+              if buttons.count():
+                  buttons.first.click(force=True)
+                  time.sleep(5)
+              txt=page.locator('body').inner_text()
+              print('BODY_BEGIN')
+              print(txt[-20000:])
+              print('BODY_END')
+              page.screenshot(path='task-manager.png',full_page=True)
+              b.close()
+          PY
+          python mpt_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mpt-inspect2
+          path: task-manager.png
+          if-no-files-found: warn
