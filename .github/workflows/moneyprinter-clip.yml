@@ -1,0 +1,108 @@
+name: MoneyPrinter Clip
+
+on:
+  push:
+    paths:
+      - 'mpt-requests/*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST_SOURCE=$(ls -1t mpt-requests/*.json | head -1)
+          cp "$REQUEST_SOURCE" envelope.json
+          python - <<'PY'
+          import json
+          body=json.load(open('envelope.json',encoding='utf-8'))
+          base=body.pop('base_url').rstrip('/')
+          open('base_url.txt','w',encoding='utf-8').write(base)
+          json.dump(body, open('request.json','w',encoding='utf-8'), ensure_ascii=False)
+          print('REQUEST_READY', base)
+          PY
+
+      - name: Create MoneyPrinter task
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL=$(cat base_url.txt)
+          curl --fail-with-body --retry 2 --retry-all-errors \
+            -H 'Content-Type: application/json' \
+            -H 'ngrok-skip-browser-warning: 1' \
+            --data-binary @request.json \
+            "$BASE_URL/api/v1/videos" > create-response.json
+          python - <<'PY'
+          import json
+          d=json.load(open('create-response.json',encoding='utf-8'))
+          task=(d.get('data') or {}).get('task_id') or d.get('task_id')
+          if not task:
+              raise SystemExit(f'No task_id in response: {d}')
+          open('task_id.txt','w').write(task)
+          print('TASK_ID='+task)
+          PY
+
+      - name: Poll and download result
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL=$(cat base_url.txt)
+          TASK_ID=$(cat task_id.txt)
+          for i in $(seq 1 180); do
+            curl --fail-with-body --retry 2 --retry-all-errors \
+              -H 'ngrok-skip-browser-warning: 1' \
+              "$BASE_URL/api/v1/tasks/$TASK_ID" > task.json || true
+            python - <<'PY' && exit_code=0 || exit_code=$?
+          import json, sys
+          try:
+              d=json.load(open('task.json',encoding='utf-8'))
+          except Exception:
+              sys.exit(10)
+          data=d.get('data') or d
+          if data.get('error'):
+              print('TASK_ERROR:', data.get('error'))
+              sys.exit(20)
+          vids=data.get('combined_videos') or data.get('videos') or []
+          if not vids:
+              print('WAIT', data.get('progress'), data.get('state'))
+              sys.exit(10)
+          url=vids[0]
+          base=open('base_url.txt').read().strip()
+          if url.startswith('/'):
+              url=base+url
+          open('video_url.txt','w').write(url)
+          print('VIDEO_URL='+url)
+          PY
+            if [ "$exit_code" -eq 0 ]; then
+              break
+            elif [ "$exit_code" -eq 20 ]; then
+              cat task.json
+              exit 20
+            fi
+            sleep 10
+          done
+          test -s video_url.txt
+          VIDEO_URL=$(cat video_url.txt)
+          curl --fail-with-body --retry 3 --retry-all-errors -L \
+            -H 'ngrok-skip-browser-warning: 1' \
+            "$VIDEO_URL" -o mpt-visual.mp4
+          test -s mpt-visual.mp4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moneyprinter-visual
+          path: |
+            mpt-visual.mp4
+            task.json
+            request.json
+            create-response.json
+          if-no-files-found: error
+          retention-days: 7
