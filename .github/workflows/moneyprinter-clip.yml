@@ -71,19 +71,15 @@ jobs:
               try:
                   page.goto(base, wait_until='domcontentloaded', timeout=120000)
                   page.get_by_text('MoneyPrinterTurbo', exact=False).first.wait_for(timeout=120000)
-                  try:
-                      page.locator('textarea').first.wait_for(state='visible', timeout=90000)
-                  except Exception:
-                      page.screenshot(path='mpt-loaded.png', full_page=True)
-                      open('mpt-page.html','w',encoding='utf-8').write(page.content())
-                      print('VISIBLE_TEXT_BEGIN')
-                      print(page.locator('body').inner_text()[:12000])
-                      print('VISIBLE_TEXT_END')
-                      raise
+                  page.locator('textarea').first.wait_for(state='visible', timeout=90000)
                   print('TEXTAREA_COUNT', page.locator('textarea').count())
                   fill_area(page, 'Video Subject', subject, 0)
                   fill_area(page, 'Video Script (Optional)', script, 1)
                   fill_area(page, 'Video Keywords (English, Optional)', terms, 2)
+
+                  # MoneyPrinter's first-run Driver.js tour can cover the Generate button.
+                  # Remove the visual tour layer; this does not alter app settings or content.
+                  page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover,.driver-active-element').forEach(e=>{if(e.classList.contains('driver-active-element')){e.classList.remove('driver-active-element')}else{e.remove()}})")
                   page.screenshot(path='mpt-ready.png', full_page=True)
 
                   btn=page.get_by_role('button', name='Generate Video', exact=True)
@@ -92,7 +88,8 @@ jobs:
                   if not btn.count():
                       raise RuntimeError('Generate Video button not found')
                   btn.first.scroll_into_view_if_needed()
-                  btn.first.click(timeout=60000)
+                  btn.first.click(timeout=30000, force=True)
+                  print('GENERATE_CLICKED')
 
                   deadline=time.time()+2100
                   completed=False
@@ -119,8 +116,9 @@ jobs:
                       page.screenshot(path='mpt-no-download.png', full_page=True)
                       raise RuntimeError('Generation completed but no Download Video button was found')
 
+                  page.evaluate("document.querySelectorAll('.driver-overlay,.driver-popover').forEach(e=>e.remove())")
                   with page.expect_download(timeout=120000) as di:
-                      dls.last.click()
+                      dls.last.click(force=True)
                   download=di.value
                   download.save_as('mpt-visual.mp4')
                   page.screenshot(path='mpt-complete.png', full_page=True)
@@ -138,12 +136,10 @@ jobs:
           path: |
             mpt-visual.mp4
             mpt-ready.png
-            mpt-loaded.png
             mpt-complete.png
             mpt-failed.png
             mpt-timeout.png
             mpt-no-download.png
-            mpt-page.html
             envelope.json
           if-no-files-found: warn
           retention-days: 7
